@@ -3,10 +3,10 @@
     <!-- See doc/feature_flags.md for more info.  -->
     <feature>
         <name>Feature_ReceiveIncomingHandoff</name>
-        <description>conhost should be able to receive incoming connections</description>
-        <stage>AlwaysDisabled</stage>
-        <alwaysEnabledBrandingTokens>
+        <description>OpenConsole should be able to receive incoming connections</description>
+        <stage>AlwaysEnabled</stage>
+        <alwaysDisabledBrandingTokens>
             <brandingToken>WindowsInbox</brandingToken>
-        </alwaysEnabledBrandingTokens>
+        </alwaysDisabledBrandingTokens>
     </feature>
 </featureStaging>
