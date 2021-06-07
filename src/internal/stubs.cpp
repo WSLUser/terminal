@@ -34,6 +34,6 @@ void EdpPolicy::AuditClipboard(const std::wstring_view /*destinationName*/) noex
 {
     // True so propsheet will show configuration options but be sure that
     // the open one won't attempt handoff from double click of OpenConsole.exe
-    isEnabled = true;
+    isEnabled = Feature_AttemptHandoff::IsEnabled();
     return S_OK;
 }
