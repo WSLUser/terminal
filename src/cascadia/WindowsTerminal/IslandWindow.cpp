@@ -6,7 +6,9 @@
 #include "../types/inc/Viewport.hpp"
 #include "resource.h"
 #include "icon.h"
-#include "TrayIcon.h"
+#include "NotificationIcon.h"
+#include <dwmapi.h>
+#include <TerminalThemeHelpers.h>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -59,7 +61,14 @@ void IslandWindow::MakeWindow() noexcept
     // Create the window with the default size here - During the creation of the
     // window, the system will give us a chance to set its size in WM_CREATE.
     // WM_CREATE will be handled synchronously, before CreateWindow returns.
-    WINRT_VERIFY(CreateWindowEx(_alwaysOnTop ? WS_EX_TOPMOST : 0,
+    //
+    // We need WS_EX_NOREDIRECTIONBITMAP for vintage style opacity, GH#603
+    //
+    // WS_EX_LAYERED acts REAL WEIRD with TerminalTrySetTransparentBackground,
+    // but it works just fine when the window is in the TOPMOST group. But if
+    // you enable it always, activating the window will remove our DWM frame
+    // entirely. Weird.
+    WINRT_VERIFY(CreateWindowEx(WS_EX_NOREDIRECTIONBITMAP | (_alwaysOnTop ? WS_EX_TOPMOST : 0),
                                 wc.lpszClassName,
                                 L"Windows Terminal",
                                 WS_OVERLAPPEDWINDOW,
@@ -311,6 +320,10 @@ void IslandWindow::Initialize()
             _taskbar = std::move(taskbar);
         }
     }
+
+    // Enable vintage opacity by removing the XAML emergency backstop, GH#603.
+    // We don't really care if this failed or not.
+    TerminalTrySetTransparentBackground(true);
 }
 
 void IslandWindow::OnSize(const UINT width, const UINT height)
@@ -424,6 +437,7 @@ long IslandWindow::_calculateTotalSize(const bool isWidth, const long clientSize
         {
             _WindowActivatedHandlers();
         }
+
         break;
     }
 
@@ -570,20 +584,20 @@ long IslandWindow::_calculateTotalSize(const bool isWidth, const long clientSize
             }
         }
     }
-    case CM_NOTIFY_FROM_TRAY:
+    case CM_NOTIFY_FROM_NOTIFICATION_AREA:
     {
         switch (LOWORD(lparam))
         {
         case NIN_SELECT:
         case NIN_KEYSELECT:
         {
-            _NotifyTrayIconPressedHandlers();
+            _NotifyNotificationIconPressedHandlers();
             return 0;
         }
         case WM_CONTEXTMENU:
         {
             const til::point eventPoint{ GET_X_LPARAM(wparam), GET_Y_LPARAM(wparam) };
-            _NotifyShowTrayContextMenuHandlers(eventPoint);
+            _NotifyShowNotificationIconContextMenuHandlers(eventPoint);
             return 0;
         }
         }
@@ -591,17 +605,17 @@ long IslandWindow::_calculateTotalSize(const bool isWidth, const long clientSize
     }
     case WM_MENUCOMMAND:
     {
-        _NotifyTrayMenuItemSelectedHandlers((HMENU)lparam, (UINT)wparam);
+        _NotifyNotificationIconMenuItemSelectedHandlers((HMENU)lparam, (UINT)wparam);
         return 0;
     }
     default:
         // We'll want to receive this message when explorer.exe restarts
-        // so that we can re-add our icon to the tray.
+        // so that we can re-add our icon to the notification area.
         // This unfortunately isn't a switch case because we register the
         // message at runtime.
         if (message == WM_TASKBARCREATED)
         {
-            _NotifyReAddTrayIconHandlers();
+            _NotifyReAddNotificationIconHandlers();
             return 0;
         }
     }
@@ -628,7 +642,7 @@ void IslandWindow::OnResize(const UINT width, const UINT height)
 void IslandWindow::OnMinimize()
 {
     // TODO GH#1989 Stop rendering island content when the app is minimized.
-    if (_minimizeToTray)
+    if (_minimizeToNotificationArea)
     {
         HideWindow();
     }
@@ -828,7 +842,7 @@ void IslandWindow::SetTaskbarProgress(const size_t state, const size_t progress)
 }
 
 // From GdiEngine::s_SetWindowLongWHelper
-void _SetWindowLongWHelper(const HWND hWnd, const int nIndex, const LONG dwNewLong) noexcept
+void SetWindowLongWHelper(const HWND hWnd, const int nIndex, const LONG dwNewLong) noexcept
 {
     // SetWindowLong has strange error handling. On success, it returns the
     // previous Window Long value and doesn't modify the Last Error state. To
@@ -919,14 +933,14 @@ void IslandWindow::_SetIsBorderless(const bool borderlessEnabled)
 
     // First, modify regular window styles as appropriate
     auto windowStyle = _getDesiredWindowStyle();
-    _SetWindowLongWHelper(hWnd, GWL_STYLE, windowStyle);
+    SetWindowLongWHelper(hWnd, GWL_STYLE, windowStyle);
 
     // Now modify extended window styles as appropriate
     // When moving to fullscreen, remove the window edge style to avoid an
     // ugly border when not focused.
     auto exWindowStyle = GetWindowLongW(hWnd, GWL_EXSTYLE);
     WI_UpdateFlag(exWindowStyle, WS_EX_WINDOWEDGE, !_fullscreen);
-    _SetWindowLongWHelper(hWnd, GWL_EXSTYLE, exWindowStyle);
+    SetWindowLongWHelper(hWnd, GWL_EXSTYLE, exWindowStyle);
 
     // Resize the window, with SWP_FRAMECHANGED, to trigger user32 to
     // recalculate the non/client areas
@@ -1064,14 +1078,14 @@ void IslandWindow::_SetIsFullscreen(const bool fullscreenEnabled)
 
     // First, modify regular window styles as appropriate
     auto windowStyle = _getDesiredWindowStyle();
-    _SetWindowLongWHelper(hWnd, GWL_STYLE, windowStyle);
+    SetWindowLongWHelper(hWnd, GWL_STYLE, windowStyle);
 
     // Now modify extended window styles as appropriate
     // When moving to fullscreen, remove the window edge style to avoid an
     // ugly border when not focused.
     auto exWindowStyle = GetWindowLongW(hWnd, GWL_EXSTYLE);
     WI_UpdateFlag(exWindowStyle, WS_EX_WINDOWEDGE, !_fullscreen);
-    _SetWindowLongWHelper(hWnd, GWL_EXSTYLE, exWindowStyle);
+    SetWindowLongWHelper(hWnd, GWL_EXSTYLE, exWindowStyle);
 
     // Only change the window position if changing fullscreen state.
     if (fChangingFullscreen)
@@ -1640,9 +1654,9 @@ void IslandWindow::HideWindow()
     ShowWindow(GetHandle(), SW_HIDE);
 }
 
-void IslandWindow::SetMinimizeToTrayBehavior(bool minimizeToTray) noexcept
+void IslandWindow::SetMinimizeToNotificationAreaBehavior(bool MinimizeToNotificationArea) noexcept
 {
-    _minimizeToTray = minimizeToTray;
+    _minimizeToNotificationArea = MinimizeToNotificationArea;
 }
 
 // Method Description:
